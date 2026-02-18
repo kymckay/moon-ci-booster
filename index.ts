@@ -84,6 +84,21 @@ function isFailedTask(action: Action): action is Action & { node: ActionNodeRunT
   return action.node.action === "run-task" && FAILURE_STATUSES.has(action.status);
 }
 
+function isRunTask(action: Action): action is Action & { node: ActionNodeRunTask } {
+  return action.node.action === "run-task";
+}
+
+function allRunTaskTargets(report: RunReport): Set<string> {
+  const targets = new Set<string>();
+  for (const action of report.actions) {
+    if (isRunTask(action)) {
+      const id = parseTarget(action.node.params.target);
+      targets.add(`${id.project}:${id.task}`);
+    }
+  }
+  return targets;
+}
+
 // --- Formatting helpers ---
 
 function stripAnsi(text: string): string {
@@ -250,10 +265,10 @@ async function postOrUpdateComment(
   }
 }
 
-async function deleteStaleComments(
+async function deletePassingComments(
   octokit: Octokit,
   existingComments: Array<{ id: number; body?: string | null }>,
-  activeTargets: Set<string>,
+  passingTargets: Set<string>,
 ): Promise<void> {
   const { repo } = github.context;
 
@@ -264,8 +279,8 @@ async function deleteStaleComments(
     if (!match) continue;
 
     const target = match[1] as string;
-    if (!activeTargets.has(target)) {
-      core.debug(`Deleting stale comment #${comment.id} for target ${target}`);
+    if (passingTargets.has(target)) {
+      core.debug(`Deleting comment #${comment.id} for now-passing target ${target}`);
       await octokit.rest.issues.deleteComment({
         ...repo,
         comment_id: comment.id,
@@ -301,7 +316,7 @@ async function main(): Promise<void> {
     core.setOutput("has-failures", "false");
     core.setOutput("comment-created", "false");
 
-    // Clean up stale comments from previous runs
+    // Clean up comments for tasks that passed in this shard
     // biome-ignore lint/complexity/useLiteralKeys: TS strict requires bracket notation for index signatures
     const inCI = !!process.env["GITHUB_REPOSITORY"];
     if (inCI) {
@@ -312,7 +327,7 @@ async function main(): Promise<void> {
           ...github.context.repo,
           issue_number: prNumber,
         });
-        await deleteStaleComments(octokit, comments, new Set());
+        await deletePassingComments(octokit, comments, allRunTaskTargets(report));
       }
     }
     return;
@@ -357,14 +372,16 @@ async function main(): Promise<void> {
         issue_number: prNumber,
       });
 
-      const activeTargets = new Set(failures.map((f) => f.target));
+      const failedTargets = new Set(failures.map((f) => f.target));
       for (const failure of failures) {
         const markdown = enforceCommentSizeLimit(formatTaskComment(failure));
         const token = commentToken(failure.target);
         await postOrUpdateComment(octokit, prNumber, existingComments, markdown, token);
       }
 
-      await deleteStaleComments(octokit, existingComments, activeTargets);
+      const passingTargets = allRunTaskTargets(report);
+      for (const t of failedTargets) passingTargets.delete(t);
+      await deletePassingComments(octokit, existingComments, passingTargets);
 
       core.setOutput("comment-created", "true");
     } catch (error: unknown) {

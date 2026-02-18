@@ -191,11 +191,15 @@ describe("stale comment deletion", () => {
       if (req.url?.includes("/commits/") && req.url?.includes("/pulls")) {
         res.end(JSON.stringify([{ number: 42 }]));
       } else if (req.url?.includes("/issues/42/comments") && req.method === "GET") {
+        // c:bar passed in this shard's report, so its comment (103) should be deleted.
+        // c:make-error is still failing, so comment 100 should be kept (updated).
+        // old:gone-task was NOT run by this shard, so comment 101 must be left alone.
         res.end(
           JSON.stringify([
             { id: 100, body: "<!-- moon-ci-booster-c:make-error -->\nold failure" },
             { id: 101, body: "<!-- moon-ci-booster-old:gone-task -->\nstale failure" },
             { id: 102, body: "unrelated comment" },
+            { id: 103, body: "<!-- moon-ci-booster-c:bar -->\nold failure for now-passing task" },
           ]),
         );
       } else if (req.url?.includes("/issues/42/comments") && req.method === "POST") {
@@ -240,8 +244,10 @@ describe("stale comment deletion", () => {
     server.close();
   });
 
-  test("deletes stale comment but keeps active and unrelated ones", () => {
-    expect(deletedCommentIds).toEqual([101]);
+  test("deletes comment for now-passing task but keeps failed, unknown, and unrelated ones", () => {
+    // Only c:bar (id 103) should be deleted — it passed in this shard.
+    // old:gone-task (id 101) is NOT deleted because this shard didn't run it.
+    expect(deletedCommentIds).toEqual([103]);
   });
 });
 
